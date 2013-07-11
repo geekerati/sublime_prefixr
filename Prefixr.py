@@ -1,10 +1,14 @@
 import sublime
 import sublime_plugin
-import urllib
-import urllib2
 import threading
 import re
-
+try:
+    from urllib.request import Request, urlopen
+    from urllib.parse import urlencode
+    from urllib.error import HTTPError, URLError
+except ImportError:
+    from urllib import urlencode
+    from urllib2 import Request, HTTPError, URLError, urlopen
 
 class PrefixrCommand(sublime_plugin.TextCommand):
     def run(self, edit):
@@ -38,21 +42,18 @@ class PrefixrCommand(sublime_plugin.TextCommand):
 
         # We clear all selection because we are going to manually set them
         self.view.sel().clear()
-
-        # This creates an edit group so we can undo all changes in one go
-        edit = self.view.begin_edit('prefixr')
-
         self.handle_threads(edit, threads, braces)
 
     def handle_threads(self, edit, threads, braces, offset=0, i=0, dir=1):
         next_threads = []
+        finished_threads = []
         for thread in threads:
             if thread.is_alive():
                 next_threads.append(thread)
                 continue
             if thread.result == False:
                 continue
-            offset = self.replace(edit, thread, braces, offset)
+            finished_threads.append(thread)
         threads = next_threads
 
         if len(threads):
@@ -71,17 +72,31 @@ class PrefixrCommand(sublime_plugin.TextCommand):
                 braces, offset, i, dir), 100)
             return
 
-        self.view.end_edit(edit)
-
+        replacements = []
+        for thread in finished_threads:
+            replacements.append({"begin": thread.sel.begin(),
+                "end":thread.sel.end(),
+                "original": thread.original,
+                "result": thread.result.decode('utf8')})
+        args = {"braces": braces, "replacements": replacements}
+        self.view.run_command("prefixrreplace",args)
         self.view.erase_status('prefixr')
         selections = len(self.view.sel())
         sublime.status_message('Prefixr successfully run on %s selection%s' %
             (selections, '' if selections == 1 else 's'))
 
-    def replace(self, edit, thread, braces, offset):
-        sel = thread.sel
-        original = thread.original
-        result = thread.result
+class PrefixrreplaceCommand(sublime_plugin.TextCommand):
+    def run(self, edit, **args):
+        offset = 0
+        braces = args['braces']
+        for replacement in args['replacements']:
+            offset = self.replace(edit, replacement, braces, offset)
+        return
+
+    def replace(self, edit, replacement, braces, offset):
+        sel = sublime.Region(replacement['begin'],replacement['end'])
+        original = replacement['original']
+        result = replacement['result']
 
         # Here we adjust each selection for any text we have already inserted
         if offset:
@@ -152,16 +167,17 @@ class PrefixrApiCall(threading.Thread):
 
     def run(self):
         try:
-            data = urllib.urlencode({'css': '{%s}' % (self.original)})
-            request = urllib2.Request('http://prefixr.com/api/index.php', data,
+            data = urlencode({'css': self.original})
+            data = data.encode('utf8')
+            request = Request('http://prefixr.com/api/index.php', data,
                 headers={"User-Agent": "Sublime Prefixr"})
-            http_file = urllib2.urlopen(request, timeout=self.timeout)
-            self.result = http_file.read().replace('{', '').replace('}', '')
+            http_file = urlopen(request, timeout=self.timeout)
+            self.result = http_file.read()
             return
 
-        except (urllib2.HTTPError) as (e):
+        except (HTTPError) as e:
             err = '%s: HTTP error %s contacting API' % (__name__, str(e.code))
-        except (urllib2.URLError) as (e):
+        except (URLError) as e:
             err = '%s: URL error %s contacting API' % (__name__, str(e.reason))
 
         sublime.error_message(err)
