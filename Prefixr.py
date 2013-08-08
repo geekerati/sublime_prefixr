@@ -167,12 +167,12 @@ class PrefixrApiCall(threading.Thread):
 
     def run(self):
         try:
-            data = urlencode({'css': self.original})
+            data = urlencode({'css': '{%s}' % (self.original)})
             data = data.encode('utf8')
             request = Request('http://prefixr.com/api/index.php', data,
                 headers={"User-Agent": "Sublime Prefixr"})
             http_file = urlopen(request, timeout=self.timeout)
-            self.result = http_file.read()
+            self.result = http_file.read().replace('{', '').replace('}', '')
             return
 
         except (HTTPError) as e:
